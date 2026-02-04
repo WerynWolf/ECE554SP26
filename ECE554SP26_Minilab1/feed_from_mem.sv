@@ -19,8 +19,11 @@ module fill_from_mem
     input wire fill,           // Initiate filling of FIFOs
 
     // Interface to FIFO
-    output logic [DATA_WIDTH-1:0] dataByte,  // Data written to selected FIFO
-    output logic [NUM_FIFOS-1:0] fifoEnable;     // Write-Enable to FIFOs (1-hot)
+    output logic [DATA_WIDTH-1:0] dataByte,   // Data written to selected FIFO
+    output logic [NUM_FIFOS-1:0] fifoEnable,  // Write-Enable to FIFOs (1-hot)
+
+    // Done Signal
+    output reg done
 );
 
 
@@ -38,10 +41,12 @@ reg [63:0] memData, data;
 // Output only sees FIFO-Width bits at a time
 assign dataByte = data[DATA_WIDTH-1:0];
 
-reg [NUM_FIFOS-1:0] target;  // Which FIFO is in use (1-hot)
+reg [NUM_FIFOS-1:0] fifoCTR;  // Which FIFO is in use (1-hot)
 reg writeEn;                 // Write current Byte to current FIFO
 // Output only sees 1-Hot Write-Enable
-assign fifoEnable = writeEn ? target : '0;
+assign fifoEnable = writeEn ? fifoCTR : '0;
+
+reg [DEPTH-1:0] byteCTR;  // Which FIFO index is being filled
 
 
 
@@ -67,8 +72,10 @@ always @(posedge clk or negedge rst_n) begin
         curAddr <= '0;
         memRead <= 1'b0;
         data <= '0;
-        target <= '0;
+        fifoCTR <= '0;
         writeEn <= 1'b0;
+        byteCTR <= '0;
+        done <= 1'b0;
         state <= IDLE;
 
     // State Machine Behavior
@@ -77,7 +84,8 @@ always @(posedge clk or negedge rst_n) begin
         // IDLE state awaits instruction to begin Fill-From-Mem op
         IDLE: begin
             if (fill) begin
-                target <= '0 | 1'b1;  // First line copied to first FIFO
+                done <= 1'b0;  // De-assert Completion Status
+                fifoCTR <= '0 | 1'b1;  // First line copied to first FIFO
                 curAddr <= addr;      // Snapshot of Memory Address
                 memRead <= 1'b1;      // Read from Memory
                 state <= LOAD;        // Advance to next State
@@ -88,6 +96,7 @@ always @(posedge clk or negedge rst_n) begin
             if(~memInUse) memRead <= 1'b0;  // Read signal PULSED
             if(memDone) begin
                 data <= memData   // Snapshot of Memory Data
+                byteCTR <= '0 | 1'b1;  // Start counting Bytes
                 state <= FILL     // Advance to next State
         end end
         
@@ -95,26 +104,28 @@ always @(posedge clk or negedge rst_n) begin
         FILL: begin
             writeEn <= 1'b0;
             // Current FIFO full
-            if (full) state <= EVAL;            // TODO - Handle FULL signal (Use DEPTH param?)
+            if (~&byteCTR) state <= EVAL;   // TODO - Addressing issues
             // Room remains; Feed next Byte
             else begin
+                byteCTR <= byteCTR<<1;
+                data <= data>>DATA_WIDTH;
                 writeEn <= 1'b1;
-                data <= data>>DATA_WIDTH; 
         end end
         
         // EVAL state rotates through FIFOs
         EVAL: begin
             
             // Next FIFO exists
-            if (target<<1) begin
-                curAddr <= curAddr + 1;
-                target <= target<<1;
+            if (fifoCTR<<1) begin
+                curAddr <= curAddr + 1;   // TODO - Addressing issues
+                fifoCTR <= fifoCTR<<1;
                 memRead <= 1'b1;
                 state <= LOAD;
             
             // All FIFOs filled
             end else begin
                 // TODO - Reset actions?
+                done <= 1'b1;
                 state <= IDLE;
         end end
     
