@@ -37,16 +37,17 @@ localparam IDLE = 2'b00,
 reg [31:0] curAddr;
 reg memRead, memDone, memInUse;
 
-reg [63:0] memData, data;
+reg [63:0] memData;
+reg [63+DATA_WIDTH:0] data;
 // Output only sees FIFO-Width bits at a time
 assign dataByte = data[DATA_WIDTH-1:0];
 
-reg [NUM_FIFOS-1:0] fifoCTR;  // Which FIFO is in use (1-hot)
+reg [NUM_FIFOS:0] fifoCTR;  // Which FIFO is in use (1-hot)
 reg writeEn;                 // Write current Byte to current FIFO
 // Output only sees 1-Hot Write-Enable
-assign fifoEnable = writeEn ? fifoCTR : '0;
+assign fifoEnable = writeEn ? fifoCTR[NUM_FIFOS-1:0] : '0;
 
-reg [DEPTH-1:0] byteCTR;  // Which FIFO index is being filled
+reg [DEPTH:0] byteCTR;  // Which FIFO index is being filled
 
 
 
@@ -84,49 +85,48 @@ always @(posedge clk or negedge rst_n) begin
         // IDLE state awaits instruction to begin Fill-From-Mem op
         IDLE: begin
             if (fill) begin
-                done <= 1'b0;  // De-assert Completion Status
-                fifoCTR <= '0 | 1'b1;  // First line copied to first FIFO
-                curAddr <= addr;      // Snapshot of Memory Address
-                memRead <= 1'b1;      // Read from Memory
-                state <= LOAD;        // Advance to next State
+                done <= 1'b0;          // De-assert Completion Status
+                fifoCTR <= '0 | 1'b1;  // Start counting FIFOs
+                curAddr <= addr;       // Snapshot of Memory Address
+                memRead <= 1'b1;       // Read from Memory
+                state <= LOAD;         // Advance to next State
         end end
         
         // LOAD state delays until Memory returns
         LOAD: begin
-            if(~memInUse) memRead <= 1'b0;  // Read signal PULSED
+            if(~memInUse) memRead <= 1'b0;  // Hold Read signal until recieved
             if(memDone) begin
-                data <= memData   // Snapshot of Memory Data
-                byteCTR <= '0 | 1'b1;  // Start counting Bytes
-                state <= FILL     // Advance to next State
+                byteCTR <= '0 | 1'b1;                  // Start counting Bytes
+                data <= {memData,{DATA_WIDTH{1'b0}}};  // Snapshot of Memory Data
+                state <= FILL;                         // Advance to next State
         end end
         
         // FILL state fills current FIFO with data
         FILL: begin
             writeEn <= 1'b0;
             // Current FIFO full
-            if (~&byteCTR) state <= EVAL;   // TODO - Addressing issues
+            if (byteCTR[DEPTH]) state <= EVAL;
             // Room remains; Feed next Byte
             else begin
-                byteCTR <= byteCTR<<1;
-                data <= data>>DATA_WIDTH;
-                writeEn <= 1'b1;
+                data <= data>>DATA_WIDTH;  // Prepare next Byte
+                writeEn <= 1'b1;           // Write Byte to FIFO
+                byteCTR <= byteCTR<<1;     // Increment Byte count
         end end
         
         // EVAL state rotates through FIFOs
         EVAL: begin
             
-            // Next FIFO exists
-            if (fifoCTR<<1) begin
-                curAddr <= curAddr + 1;   // TODO - Addressing issues
-                fifoCTR <= fifoCTR<<1;
-                memRead <= 1'b1;
-                state <= LOAD;
-            
             // All FIFOs filled
-            end else begin
-                // TODO - Reset actions?
+            if (fifoCTR[NUM_FIFOS]) begin
                 done <= 1'b1;
                 state <= IDLE;
+            
+            // Next FIFO exists
+            end else begin
+                curAddr <= curAddr + 1;  // TODO - Addressing issues
+                fifoCTR <= fifoCTR<<1;   // Advance to next FIFO
+                memRead <= 1'b1;         // Read from Memory
+                state <= LOAD;           // Advance to next State
         end end
     
     // End of Case Statement
